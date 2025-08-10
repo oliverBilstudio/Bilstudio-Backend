@@ -8,7 +8,7 @@ Express-app som tar imot kontaktskjema og sender e-post (til Bilstudio + bekreft
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=oliver@bil-studio.no
-SMTP_PASS=<app-passord fra Google>
+SMTP_PASS=dkqnnktliiexjopn
 MAIL_FROM="Bilstudio <oliver@bil-studio.no>"
 MAIL_TO=Oliver@bil-studio.no
 ORIGIN=https://roaring-nasturtium-94859c.netlify.app
