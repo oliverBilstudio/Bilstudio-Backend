@@ -2,8 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
-const fetch = require('node-fetch');            // <- for å hente FINN-siden
-const cheerio = require('cheerio');             // <- for å parse HTML
+const fetch = require('node-fetch');       // v2.x
+const cheerio = require('cheerio');
 
 const app = express();
 
@@ -11,10 +11,88 @@ const app = express();
 app.use(cors({ origin: process.env.ORIGIN || '*' }));
 app.use(express.json());
 
-// Helse/ping
+// Ping / helse
 app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-// Enkel test av SMTP utenom skjemaet
+/**
+ * Hent annonser fra FINN Bedriftsside
+ * Eksempel: GET /finn?orgId=4008599
+ */
+app.get('/finn', async (req, res) => {
+  const orgId = req.query.orgId || '4008599';
+  const url = `https://www.finn.no/mobility/business?orgId=${orgId}`;
+
+  try {
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36',
+        'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.5',
+        'Cache-Control': 'no-cache'
+      },
+      // no redirect following is fine
+    });
+
+    const html = await resp.text();
+    const $ = cheerio.load(html);
+    const items = [];
+
+    // FINN varierer litt. Vi prøver flere "sikre" selektorer.
+    // 1) Finn alle artikler (kort) – ofte <article ...>
+    $('article').each((_, el) => {
+      const $el = $(el);
+
+      // Lenkene
+      let link =
+        $el.find('a[href*="/car/"]').attr('href') ||
+        $el.find('a[href*="/motor/"]').attr('href') ||
+        $el.find('a[href*="/classif"]').attr('href');
+
+      if (!link) return;
+      if (link && !link.startsWith('http')) link = 'https://www.finn.no' + link;
+
+      // Tittel – prøv flere steder
+      const title =
+        $el.find('h2').text().trim() ||
+        $el.find('[data-testid="label"]').text().trim() ||
+        $el.find('[itemprop="name"]').text().trim() ||
+        'Uten tittel';
+
+      // Bilde – src eller data-src, og ofte //-prefiks
+      let img =
+        $el.find('img').attr('src') ||
+        $el.find('img').attr('data-src') ||
+        $el.find('img').attr('data-original');
+
+      if (img && img.startsWith('//')) img = 'https:' + img;
+
+      // Pris – forsøk noen varianter
+      const price =
+        $el.find('[data-testid="price"]').first().text().trim() ||
+        $el.find('*:contains("kr")').first().text().trim();
+
+      // Enkel “bilfilter”: la kun gjennom linker som ser ut som annonse
+      if (/\/car\//.test(link) || /\/motor\//.test(link) || /ad\.html/.test(link)) {
+        items.push({
+          title,
+          link,
+          image: img || '',
+          price
+        });
+      }
+    });
+
+    // Debug-logg i Render
+    console.log('FINN scrape', { orgId, count: items.length });
+
+    res.json({ ok: true, items });
+  } catch (err) {
+    console.error('FINN scrape error', err);
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// Test-mail (valgfri)
 app.get('/test-mail', async (req, res) => {
   try {
     const transporter = nodemailer.createTransport({
@@ -35,81 +113,16 @@ app.get('/test-mail', async (req, res) => {
 
     res.json({ ok: true });
   } catch (err) {
-    console.error('Test-mail feil ❌', err);
     res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
-/* ------------------------------------------------------------------
-   /finn – henter og parser annonselisten fra FINN
-   ------------------------------------------------------------------ */
-const FINN_ORG_ID = process.env.FINN_ORG_ID || '4008599';
-const FINN_URL = `https://www.finn.no/mobility/business?orgId=${FINN_ORG_ID}`;
-
-// enkel minnecache (10 min)
-let cache = { time: 0, data: [] };
-const CACHE_MS = 10 * 60 * 1000;
-
-app.get('/finn', async (req, res) => {
-  try {
-    // cache
-    if (Date.now() - cache.time < CACHE_MS && cache.data.length) {
-      return res.json({ items: cache.data, cached: true });
-    }
-
-    const html = await fetch(FINN_URL, {
-      headers: {
-        // user-agent for å få "vanlig" HTML fra FINN
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36'
-      }
-    }).then(r => r.text());
-
-    const $ = cheerio.load(html);
-    const items = [];
-
-    // FINN kan endre markup. Dette fungerer pr. nå, men kan måtte tilpasses.
-    $('a[href*="/car/"], a[href*="/bap/forsale/"], a[href*="/car/used"]').each((_, a) => {
-      const href = $(a).attr('href');
-      const url = href?.startsWith('http') ? href : `https://www.finn.no${href}`;
-
-      const title =
-        $(a).find('h3, .ads__unit__link, .sf-card__title, .ads__unit__content__title').first().text().trim() ||
-        $(a).attr('aria-label') ||
-        'Uten tittel';
-
-      // finn bilde
-      let img =
-        $(a).find('img').attr('src') ||
-        $(a).find('img').attr('data-src') ||
-        $(a).find('img').attr('data-original') ||
-        null;
-
-      // finn pris
-      const price =
-        $(a).find('.ads__unit__content__keys .ads__unit__content__value').first().text().trim() ||
-        $(a).find('[class*="price"]').first().text().trim() ||
-        '';
-
-      if (url && title) {
-        items.push({ title, url, img, price });
-      }
-    });
-
-    cache = { time: Date.now(), data: items };
-    res.json({ items, cached: false });
-  } catch (e) {
-    console.error('Feil ved henting/parsing av FINN', e);
-    res.json({ items: [] });
-  }
-});
-
-/* ------------------ Kontakt-endepunkt (din kode) ------------------ */
+// Kontakt-skjema
 app.post('/contact', async (req, res) => {
   const { regnr, name, email, phone, message } = req.body;
   if (!regnr || !name || !email || !phone) {
     return res.status(400).json({ error: 'Mangler påkrevde felt' });
   }
-
   try {
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -148,15 +161,13 @@ Bilstudio`
 
     res.json({ success: true });
   } catch (err) {
-    console.error('E‑postfeil ❌', err);
+    console.error('E‑postfeil', err);
     res.status(500).json({ error: 'Kunne ikke sende e‑post' });
   }
 });
 
 // Rot
-app.get('/', (req, res) => {
-  res.send('Bilstudio server kjører.');
-});
+app.get('/', (req, res) => res.send('Bilstudio server kjører.'));
 
 // Start
 const PORT = process.env.PORT || 3000;
