@@ -154,9 +154,11 @@ app.get('/test-mail', async (req, res) => {
    Kontakt‑skjema – sender til MAIL_TO + bekreftelse til kunde
 ---------------------------------------------------------- */
 app.post('/contact', async (req, res) => {
-  const { regnr, name, email, phone, message } = req.body;
-  if (!regnr || !name || !email || !phone) {
-    return res.status(400).json({ error: 'Mangler påkrevde felt' });
+  const { regnr = '', name, email, phone, message } = req.body;
+
+  // regnr er nå VALGFRITT
+  if (!name || !email || !phone) {
+    return res.status(400).json({ error: 'Navn, e‑post og telefon er påkrevd' });
   }
 
   try {
@@ -169,20 +171,24 @@ app.post('/contact', async (req, res) => {
       debug: true
     });
 
-    // Til Bilstudio
+    const subject = regnr
+      ? `Ny henvendelse via nettsiden – ${regnr}`
+      : `Ny henvendelse via nettsiden`;
+
+    // 1) Intern e‑post
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: process.env.MAIL_TO,
-      subject: `Ny henvendelse via nettsiden - ${regnr}`,
+      subject,
       text:
-`Registreringsnummer: ${regnr}
+`Registreringsnummer: ${regnr || '(ikke oppgitt)'}
 Navn: ${name}
 E‑post: ${email}
 Telefon: ${phone}
 Melding: ${message || '(Ingen melding)'}`
     });
 
-    // Bekreftelse til kunde
+    // 2) Bekreftelse til kunde
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: email,
@@ -190,12 +196,19 @@ Melding: ${message || '(Ingen melding)'}`
       text:
 `Hei ${name},
 
-Takk for at du kontaktet oss angående bil med registreringsnummer ${regnr}.
+Takk for at du kontaktet oss${regnr ? ` angående bil med registreringsnummer ${regnr}` : ''}.
 Vi ser på henvendelsen og svarer fortløpende.
 
 Mvh
 Bilstudio`
     });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('E‑postfeil', err);
+    res.status(500).json({ error: 'Kunne ikke sende e‑post' });
+  }
+});
 
     res.json({ success: true });
   } catch (err) {
