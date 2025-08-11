@@ -1,99 +1,94 @@
+// server.js
 require('dotenv').config();
-const express   = require('express');
-const cors      = require('cors');
-const nodemailer= require('nodemailer');
-const fetch     = require('node-fetch');   // v2.x
-const cheerio   = require('cheerio');
+const express    = require('express');
+const cors       = require('cors');
+const nodemailer = require('nodemailer');
+const fetch      = require('node-fetch');      // v2.x
+const cheerio    = require('cheerio');
 
 const app = express();
 
-/* -----------------------------------------------------------
-   CORS – tillat Netlify (frontend). Om ORIGIN ikke er satt,
-   tillat alle (*).
------------------------------------------------------------ */
-const allowed = process.env.ORIGIN || '*';
-app.use(cors({ origin: allowed }));
+/* ---------------------------------------------------------
+   CORS – tillat kun Netlify-opprinnelse (eller * om ikke satt)
+---------------------------------------------------------- */
+app.use(cors({ origin: process.env.ORIGIN || '*' }));
 app.use(express.json());
 
-/* -----------------------------------------------------------
-   Ping (helsesjekk)
------------------------------------------------------------ */
-app.get('/ping', (req, res) =>
-  res.json({ ok: true, time: new Date().toISOString() })
-);
+/* ---------------------------------------------------------
+   Helse/ping
+---------------------------------------------------------- */
+app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
-/* -----------------------------------------------------------
-   Hjelpefunksjoner for scraping
------------------------------------------------------------ */
-function absolutize(url) {
-  if (!url) return '';
-  if (url.startsWith('//')) return 'https:' + url;
-  if (url.startsWith('/'))  return 'https://www.finn.no' + url;
-  return url;
-}
-
-function firstFromSrcset(srcset) {
-  if (!srcset) return '';
-  // "https://img1.jpg 1x, https://img2.jpg 2x" -> "https://img1.jpg"
-  return srcset.split(',')[0].trim().split(' ')[0];
-}
-
-/* -----------------------------------------------------------
-   FINN-scrape – bruker søkesiden: mobility/search/car?orgId=...
-   Dette gir bare faktiske bilannonser (ikke kart / bli-kunde).
------------------------------------------------------------ */
+/* ---------------------------------------------------------
+   /finn – hent faktiske annonser fra FINNs søkeside
+   Bruker bare ad-lenker: /car/used/ad.html?finnkode=...
+   Eksempel: GET /finn?orgId=4008599
+---------------------------------------------------------- */
 app.get('/finn', async (req, res) => {
   const orgId = req.query.orgId || '4008599';
   const url   = `https://www.finn.no/mobility/search/car?orgId=${orgId}`;
+
+  // Hjelpere
+  const absolutize = (href) => {
+    if (!href) return '';
+    if (href.startsWith('//')) return 'https:' + href;
+    if (href.startsWith('/'))  return 'https://www.finn.no' + href;
+    return href;
+  };
+  const firstFromSrcset = (ss) => {
+    if (!ss) return '';
+    return ss.split(',')[0].trim().split(' ')[0];
+  };
 
   try {
     const resp = await fetch(url, {
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36',
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116 Safari/537.36',
         'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.5',
         'Cache-Control': 'no-cache'
       }
     });
+
     const html = await resp.text();
     const $ = cheerio.load(html);
 
     const items = [];
     const seen  = new Set();
 
-    // Gå gjennom alle "kort". FINN endrer markup innimellom,
-    // så vi leter bredt og filtrerer på lenker som ser ut som annonse.
-    $('article, li, div').each((_, el) => {
-      const $el = $(el);
+    // plukk KUN annonselenker
+    $('a[href*="/car/used/ad.html?finnkode="]').each((_, a) => {
+      let href = $(a).attr('href');
+      if (!href) return;
+      href = absolutize(href);
+      if (seen.has(href)) return;   // unngå duplikater
+      seen.add(href);
 
-      // Finn lenke som peker til en bilannonse
-      let a = $el.find('a[href*="/car/"]').first();
-      if (!a.length) return;
+      const $card = $(a).closest('article').length
+        ? $(a).closest('article')
+        : $(a).parent();
 
-      let link = absolutize(a.attr('href'));
-      if (!link || seen.has(link)) return;
+      // Tittel
+      const title =
+        $card.find('[data-testid="object-card-title"]').first().text().trim() ||
+        $card.find('h3, h2').first().text().trim() ||
+        $(a).attr('title') || $(a).text().trim() || 'Uten tittel';
 
-      // Tittel – prøv flere varianter
-      let title =
-        $el.find('[data-testid="object-card-title"]').text().trim() ||
-        $el.find('h3, h2').first().text().trim() ||
-        a.attr('aria-label') || a.text().trim() || 'Uten tittel';
-
-      // Bilde – kan ligge i <img> eller srcset på <source>
+      // Bilde (img/src, data-src eller <source srcset>)
       let img =
-        $el.find('img').attr('src') ||
-        $el.find('img').attr('data-src') ||
-        firstFromSrcset($el.find('source').attr('srcset'));
+        $card.find('img').attr('src') ||
+        $card.find('img').attr('data-src') ||
+        firstFromSrcset($card.find('source').attr('srcset'));
       img = absolutize(img);
 
-      // Pris – prøv testid først, ellers første tekstnode med "kr"
+      // Pris – prøv data-testid=price først
       let price =
-        $el.find('[data-testid="price"]').first().text().trim() ||
-        $el.find(':contains("kr")').filter((i, e) => $(e).children().length === 0)
-          .first().text().trim();
+        $card.find('[data-testid="price"]').first().text().trim() ||
+        $card.find(':contains("kr")')
+             .filter((i, el) => $(el).children().length === 0)
+             .first().text().trim();
 
-      items.push({ title, link, image: img || '', price });
-      seen.add(link);
+      items.push({ title, link: href, image: img || '', price });
     });
 
     console.log('FINN scrape (search/car)', { orgId, count: items.length });
@@ -104,9 +99,9 @@ app.get('/finn', async (req, res) => {
   }
 });
 
-/* -----------------------------------------------------------
-   Test-mail (valgfri)
------------------------------------------------------------ */
+/* ---------------------------------------------------------
+   Test‑mail (frivillig) – nyttig for å sjekke SMTP
+---------------------------------------------------------- */
 app.get('/test-mail', async (req, res) => {
   try {
     const transporter = nodemailer.createTransport({
@@ -119,21 +114,20 @@ app.get('/test-mail', async (req, res) => {
     });
 
     await transporter.sendMail({
-      from: process.env.MAIL_FROM,
+      from: process.env.MAIL_FROM,     // må være samme konto/domenet som SMTP_USER
       to: process.env.MAIL_TO,
       subject: 'Test fra Bilstudio backend',
       text: 'Hvis du leser dette, funker SMTP fra Render.'
     });
-
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
-/* -----------------------------------------------------------
-   Kontaktskjema
------------------------------------------------------------ */
+/* ---------------------------------------------------------
+   Kontakt‑skjema – sender til MAIL_TO + bekreftelse til kunde
+---------------------------------------------------------- */
 app.post('/contact', async (req, res) => {
   const { regnr, name, email, phone, message } = req.body;
   if (!regnr || !name || !email || !phone) {
@@ -150,7 +144,7 @@ app.post('/contact', async (req, res) => {
       debug: true
     });
 
-    // Til Bilstudio
+    // Intern e‑post
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: process.env.MAIL_TO,
@@ -185,13 +179,13 @@ Bilstudio`
   }
 });
 
-/* -----------------------------------------------------------
-   Rot
------------------------------------------------------------ */
+/* ---------------------------------------------------------
+   Rot – enkel tekst for å bekrefte at serveren lever
+---------------------------------------------------------- */
 app.get('/', (req, res) => res.send('Bilstudio server kjører.'));
 
-/* -----------------------------------------------------------
-   Start
------------------------------------------------------------ */
+/* ---------------------------------------------------------
+   Start server
+---------------------------------------------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server kjører på port ${PORT}`));
