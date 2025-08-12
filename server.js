@@ -15,42 +15,81 @@ app.use(express.json());
 /* ---------------------------------------------------------
    Helse/ping
 ---------------------------------------------------------- */
-app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get('/ping', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 /* ---------------------------------------------------------
-   Hent biler fra FINN API (orgId=4008599 som default)
+   FINN API – henter biler for orgId (default 4008599)
+   Bruk i frontend:  GET https://<din-backend>/api/cars
 ---------------------------------------------------------- */
+async function fetchFinnCarsFromApi(orgId, apiKey) {
+  const url = `https://cache.api.finn.no/iad/search/car?orgId=${encodeURIComponent(orgId)}`;
+
+  const resp = await fetch(url, {
+    headers: {
+      'X-FINN-apikey': apiKey,           // VIKTIG: korrekt header
+      'Accept': 'application/json'
+    }
+  });
+
+  // Les respons-tekst én gang (til feilsøk)
+  const text = await resp.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* ikke gyldig JSON */ }
+
+  return { status: resp.status, ok: resp.ok, data: json, raw: text };
+}
+
 app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
   try {
     const orgId = req.query.orgId || '4008599';
-    const apiKey = process.env.FINN_API_KEY || 'c7279a2f-67a5-482d-bc56-45556cd482fe';
+    const apiKey = process.env.FINN_API_KEY; // legg i .env / Render env
 
-    const url = `https://cache.api.finn.no/iad/search/car?orgId=${orgId}`;
-    const resp = await fetch(url, {
-      headers: { 'X-FINN-apikey': apiKey }
-    });
-
-    if (!resp.ok) {
-      return res.status(resp.status).json({ ok: false, error: `FINN API error: ${resp.status}` });
+    if (!apiKey) {
+      return res.status(500).json({ ok: false, error: 'Mangler FINN_API_KEY i environment' });
     }
 
-    const data = await resp.json();
+    const result = await fetchFinnCarsFromApi(orgId, apiKey);
 
-    // Mapper til frontend-format
-    const items = (data.docs || []).map(doc => {
-      const link = doc.ad_link || `https://www.finn.no/car/used/ad.html?finnkode=${doc.id}`;
-      const image = doc.image || (doc.images && doc.images[0] && doc.images[0].url) || '';
-      const price = doc.price?.amount ? `${doc.price.amount.toLocaleString('no-NO')} kr` : '';
+    if (!result.ok) {
+      // Returner tydelig feilmelding til frontend
+      // 403 betyr ofte at nøkkelen ikke er aktiv ennå eller feil header
+      return res
+        .status(result.status)
+        .json({
+          ok: false,
+          error: `FINN API error: ${result.status}`,
+          hint: result.status === 403
+            ? 'Sjekk at X-FINN-apikey er korrekt og at tilgangen er aktiv (første hele klokketime).'
+            : undefined
+        });
+    }
+
+    // Mapper til et enkelt frontend-format
+    const docs = Array.isArray(result.data?.docs) ? result.data.docs : [];
+    const items = docs.map(doc => {
+      const finnkode = doc.id || doc.finnkode || doc.finnCode;
+      const link =
+        doc.ad_link ||
+        (finnkode ? `https://www.finn.no/car/used/ad.html?finnkode=${finnkode}` : '');
+      const image =
+        doc.image ||
+        (Array.isArray(doc.images) && doc.images[0] && (doc.images[0].url || doc.images[0].image_url)) ||
+        '';
+      const price =
+        doc.price?.amount != null
+          ? `${Number(doc.price.amount).toLocaleString('no-NO')} kr`
+          : (doc.price?.display || '');
 
       return {
-        title: doc.heading || doc.title,
+        title: doc.heading || doc.title || 'Uten tittel',
         link,
         image,
         price
       };
     });
 
-    res.json({ ok: true, items });
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, count: items.length, items });
   } catch (err) {
     console.error('FINN API error', err);
     res.status(500).json({ ok: false, error: String(err) });
@@ -58,9 +97,36 @@ app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Test-mail (frivillig) – for å verifisere SMTP
+   Debug – sjekk status og litt av råresponsen fra FINN
+   URL: /debug/finnapi?orgId=4008599
 ---------------------------------------------------------- */
-app.get('/test-mail', async (req, res) => {
+app.get('/debug/finnapi', async (req, res) => {
+  try {
+    const orgId = req.query.orgId || '4008599';
+    const apiKey = process.env.FINN_API_KEY || '';
+    if (!apiKey) return res.status(500).send('Mangler FINN_API_KEY');
+
+    const r = await fetchFinnCarsFromApi(orgId, apiKey);
+    const snippet = (r.raw || '').slice(0, 800);
+    res
+      .status(200)
+      .type('text/plain')
+      .send(
+        `URL: https://cache.api.finn.no/iad/search/car?orgId=${orgId}\n` +
+        `Status: ${r.status}\n` +
+        `OK: ${r.ok}\n` +
+        `JSON: ${Array.isArray(r.data?.docs) ? 'yes' : 'no'}\n\n` +
+        `First 800 chars of body:\n${snippet}`
+      );
+  } catch (e) {
+    res.status(500).type('text/plain').send(String(e));
+  }
+});
+
+/* ---------------------------------------------------------
+   Test‑mail – verifiser SMTP (valgfritt)
+---------------------------------------------------------- */
+app.get('/test-mail', async (_req, res) => {
   try {
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -75,7 +141,7 @@ app.get('/test-mail', async (req, res) => {
       from: process.env.MAIL_FROM,
       to: process.env.MAIL_TO,
       subject: 'Test fra Bilstudio backend',
-      text: 'Hvis du leser dette, funker SMTP fra Render.'
+      text: 'Hvis du leser dette, funker SMTP fra serveren.'
     });
 
     res.json({ ok: true });
@@ -85,13 +151,13 @@ app.get('/test-mail', async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Kontakt-skjema – sender til MAIL_TO + bekreftelse til kunde
+   Kontakt‑skjema – sender til MAIL_TO + bekreftelse
 ---------------------------------------------------------- */
 app.post('/contact', async (req, res) => {
   const { regnr = '', name, email, phone, message } = req.body;
 
   if (!name || !email || !phone) {
-    return res.status(400).json({ error: 'Navn, e-post og telefon er påkrevd' });
+    return res.status(400).json({ error: 'Navn, e‑post og telefon er påkrevd' });
   }
 
   try {
@@ -108,7 +174,7 @@ app.post('/contact', async (req, res) => {
       ? `Ny henvendelse via nettsiden – ${regnr}`
       : `Ny henvendelse via nettsiden`;
 
-    // Intern e-post
+    // 1) Intern e‑post
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: process.env.MAIL_TO,
@@ -116,12 +182,12 @@ app.post('/contact', async (req, res) => {
       text:
 `Registreringsnummer: ${regnr || '(ikke oppgitt)'}
 Navn: ${name}
-E-post: ${email}
+E‑post: ${email}
 Telefon: ${phone}
 Melding: ${message || '(Ingen melding)'}`
     });
 
-    // Bekreftelse til kunde
+    // 2) Bekreftelse til kunde
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: email,
@@ -138,15 +204,15 @@ Bilstudio`
 
     res.json({ success: true });
   } catch (err) {
-    console.error('E-postfeil', err);
-    res.status(500).json({ error: 'Kunne ikke sende e-post' });
+    console.error('E‑postfeil', err);
+    res.status(500).json({ error: 'Kunne ikke sende e‑post' });
   }
 });
 
 /* ---------------------------------------------------------
    Rot
 ---------------------------------------------------------- */
-app.get('/', (req, res) => res.send('Bilstudio server kjører.'));
+app.get('/', (_req, res) => res.send('Bilstudio server kjører.'));
 
 /* ---------------------------------------------------------
    Start server
