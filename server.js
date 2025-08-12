@@ -3,7 +3,7 @@ require('dotenv').config();
 const express    = require('express');
 const cors       = require('cors');
 const nodemailer = require('nodemailer');
-const fetch      = require('node-fetch');        // v2.x
+const fetch      = require('node-fetch'); // v2.x
 const cheerio    = require('cheerio');
 
 const app = express();
@@ -17,10 +17,12 @@ app.use(express.json());
 /* ---------------------------------------------------------
    Helse/ping
 ---------------------------------------------------------- */
-app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get('/ping', (_req, res) =>
+  res.json({ ok: true, time: new Date().toISOString() })
+);
 
 /* ---------------------------------------------------------
-   Hjelpere
+   Hjelpere for scraping fra FINN
 ---------------------------------------------------------- */
 const absolutize = (href) => {
   if (!href) return '';
@@ -30,18 +32,18 @@ const absolutize = (href) => {
 };
 const bestFromSrcset = (ss) => {
   if (!ss) return '';
-  // velg siste (høyest oppløsning)
   const parts = ss.split(',').map(s => s.trim());
   const last  = parts[parts.length - 1] || '';
   return last.split(' ')[0] || '';
 };
 
 /* ---------------------------------------------------------
-   /finn og /cars – KUN bilannonser fra søkesiden
-   Eksempel: GET /finn?orgId=4008599
+   Hent biler fra FINN søkesiden (kun bilannonser)
+   Eksempel: GET /cars?orgId=4008599  eller /api/cars?orgId=4008599
 ---------------------------------------------------------- */
 async function fetchFinnCars(orgId = '4008599') {
   const url = `https://www.finn.no/mobility/search/car?orgId=${orgId}`;
+
   const resp = await fetch(url, {
     headers: {
       'User-Agent':
@@ -57,7 +59,7 @@ async function fetchFinnCars(orgId = '4008599') {
   const items = [];
   const seen  = new Set();
 
-  // 1) Primær: kortvisning – finn kun ekte annonse-lenker
+  // Primær: finn kortene i DOM
   $('a[href*="/car/used/ad.html?finnkode="]').each((_, a) => {
     let link = absolutize($(a).attr('href'));
     if (!link || seen.has(link)) return;
@@ -90,7 +92,7 @@ async function fetchFinnCars(orgId = '4008599') {
     seen.add(link);
   });
 
-  // 2) Fallback: om markup er annerledes – finn annonse-URLer via regex
+  // Fallback: regex hvis markup ikke traff
   if (items.length === 0) {
     const regex = /\/car\/used\/ad\.html\?finnkode=\d+/g;
     const found = new Set();
@@ -102,7 +104,7 @@ async function fetchFinnCars(orgId = '4008599') {
       items.push({
         title: 'Se annonse',
         link: href,
-        image: '', // frontend har fallback
+        image: '',
         price: ''
       });
     }
@@ -111,11 +113,14 @@ async function fetchFinnCars(orgId = '4008599') {
   return items;
 }
 
-app.get(['/finn', '/cars'], async (req, res) => {
+// To ruter som gjør det samme: /cars og /api/cars
+app.get(['/cars', '/api/cars'], async (req, res) => {
   try {
     const orgId = req.query.orgId || '4008599';
     const items = await fetchFinnCars(orgId);
-    console.log('FINN scrape (search/car)', { orgId, count: items.length });
+
+    // Ingen caching – vil alltid vise fersk liste
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.json({ ok: true, items });
   } catch (err) {
     console.error('FINN scrape error', err);
@@ -124,9 +129,9 @@ app.get(['/finn', '/cars'], async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Test‑mail (frivillig) – for å verifisere SMTP
+   Test‑mail (frivillig) – verifiser SMTP
 ---------------------------------------------------------- */
-app.get('/test-mail', async (req, res) => {
+app.get('/test-mail', async (_req, res) => {
   try {
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -138,10 +143,10 @@ app.get('/test-mail', async (req, res) => {
     });
 
     await transporter.sendMail({
-      from: process.env.MAIL_FROM,   // bør være samme domene/konto som SMTP_USER
+      from: process.env.MAIL_FROM,
       to: process.env.MAIL_TO,
       subject: 'Test fra Bilstudio backend',
-      text: 'Hvis du leser dette, funker SMTP fra Render.'
+      text: 'Hvis du leser dette, funker SMTP fra serveren.'
     });
 
     res.json({ ok: true });
@@ -156,7 +161,7 @@ app.get('/test-mail', async (req, res) => {
 app.post('/contact', async (req, res) => {
   const { regnr = '', name, email, phone, message } = req.body;
 
-  // regnr er nå VALGFRITT
+  // regnr er VALGFRITT – men name/email/phone er påkrevd
   if (!name || !email || !phone) {
     return res.status(400).json({ error: 'Navn, e‑post og telefon er påkrevd' });
   }
@@ -210,17 +215,10 @@ Bilstudio`
   }
 });
 
-    res.json({ success: true });
-  } catch (err) {
-    console.error('E‑postfeil', err);
-    res.status(500).json({ error: 'Kunne ikke sende e‑post' });
-  }
-});
-
 /* ---------------------------------------------------------
    Rot
 ---------------------------------------------------------- */
-app.get('/', (req, res) => res.send('Bilstudio server kjører.'));
+app.get('/', (_req, res) => res.send('Bilstudio server kjører.'));
 
 /* ---------------------------------------------------------
    Start server
