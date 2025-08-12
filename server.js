@@ -29,12 +29,12 @@ async function fetchFinnCarsFromApi(orgId, apiKey) {
 
   const resp = await fetch(url, {
     headers: {
-      'X-FINN-apikey': apiKey,   // VIKTIG: korrekt header
+      'X-FINN-apikey': apiKey,   // VIKTIG: riktig header
       'Accept': 'application/json'
     }
   });
 
-  // Les body én gang slik at vi kan både parse og vise snippet i debug
+  // Les body én gang (til både parsing og debug)
   const text = await resp.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { /* ignorer parse-feil */ }
@@ -60,7 +60,7 @@ app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
           ok: false,
           error: `FINN API error: ${result.status}`,
           hint: result.status === 403
-            ? 'Sjekk X-FINN-apikey, at tilgangen er aktiv (første hele klokketime), og at vi bruker korrekt endpoint.'
+            ? 'Sjekk X-FINN-apikey, at tilgangen er aktiv, og at /iad/search/car er åpnet for nøkkelen.'
             : undefined
         });
     }
@@ -125,7 +125,8 @@ app.get('/debug/finnapi', async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Debug – test basis-URL som Geir ba om (skal bli 200 når nøkkel er aktiv)
+   Debug – FULL liste over collections på /iad/
+   (brukes for å se om "search/car" er tilgjengelig for nøkkelen)
    URL: /debug/finnroot
 ---------------------------------------------------------- */
 app.get('/debug/finnroot', async (_req, res) => {
@@ -134,10 +135,8 @@ app.get('/debug/finnroot', async (_req, res) => {
       headers: { 'X-FINN-apikey': process.env.FINN_API_KEY || '' }
     });
     const text = await r.text();
-    res
-      .status(200)
-      .type('text/plain')
-      .send(`Status: ${r.status}\nOK: ${r.ok}\nFirst 400 chars:\n${text.slice(0,400)}`);
+    // Vis HELE XML, ikke avkort
+    res.status(200).type('application/xml').send(text);
   } catch (e) {
     res.status(500).type('text/plain').send(String(e));
   }
