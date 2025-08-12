@@ -1,7 +1,7 @@
 {
   "name": "bilstudio-server",
   "version": "1.0.0",
-  "description": "Backend for Bilstudio kontaktskjema",
+  "description": "Backend for Bilstudio (FINN API proxy + kontakt)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,6 +12,7 @@
     "express": "^4.19.2",
     "nodemailer": "^6.9.13",
     "node-fetch": "^2.6.12",
-    "cheerio": "^1.0.0-rc.12"
+    "cheerio": "^1.0.0-rc.12",
+    "fast-xml-parser": "^4.4.0"
   }
 }
