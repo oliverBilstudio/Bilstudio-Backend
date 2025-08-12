@@ -1,3 +1,4 @@
+// server.js
 require('dotenv').config();
 const express    = require('express');
 const cors       = require('cors');
@@ -15,26 +16,28 @@ app.use(express.json());
 /* ---------------------------------------------------------
    Helse/ping
 ---------------------------------------------------------- */
-app.get('/ping', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get('/ping', (_req, res) =>
+  res.json({ ok: true, time: new Date().toISOString() })
+);
 
 /* ---------------------------------------------------------
    FINN API – henter biler for orgId (default 4008599)
-   Bruk i frontend:  GET https://<din-backend>/api/cars
+   Frontend bruker:  GET https://<din-backend>/api/cars
 ---------------------------------------------------------- */
 async function fetchFinnCarsFromApi(orgId, apiKey) {
   const url = `https://cache.api.finn.no/iad/search/car?orgId=${encodeURIComponent(orgId)}`;
 
   const resp = await fetch(url, {
     headers: {
-      'X-FINN-apikey': apiKey,           // VIKTIG: korrekt header
+      'X-FINN-apikey': apiKey,   // VIKTIG: korrekt header
       'Accept': 'application/json'
     }
   });
 
-  // Les respons-tekst én gang (til feilsøk)
+  // Les body én gang slik at vi kan både parse og vise snippet i debug
   const text = await resp.text();
   let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch { /* ikke gyldig JSON */ }
+  try { json = text ? JSON.parse(text) : null; } catch { /* ignorer parse-feil */ }
 
   return { status: resp.status, ok: resp.ok, data: json, raw: text };
 }
@@ -42,7 +45,7 @@ async function fetchFinnCarsFromApi(orgId, apiKey) {
 app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
   try {
     const orgId = req.query.orgId || '4008599';
-    const apiKey = process.env.FINN_API_KEY; // legg i .env / Render env
+    const apiKey = process.env.FINN_API_KEY; // sett i .env / Render env
 
     if (!apiKey) {
       return res.status(500).json({ ok: false, error: 'Mangler FINN_API_KEY i environment' });
@@ -51,20 +54,18 @@ app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
     const result = await fetchFinnCarsFromApi(orgId, apiKey);
 
     if (!result.ok) {
-      // Returner tydelig feilmelding til frontend
-      // 403 betyr ofte at nøkkelen ikke er aktiv ennå eller feil header
       return res
         .status(result.status)
         .json({
           ok: false,
           error: `FINN API error: ${result.status}`,
           hint: result.status === 403
-            ? 'Sjekk at X-FINN-apikey er korrekt og at tilgangen er aktiv (første hele klokketime).'
+            ? 'Sjekk X-FINN-apikey, at tilgangen er aktiv (første hele klokketime), og at vi bruker korrekt endpoint.'
             : undefined
         });
     }
 
-    // Mapper til et enkelt frontend-format
+    // Map til enkelt frontend-format
     const docs = Array.isArray(result.data?.docs) ? result.data.docs : [];
     const items = docs.map(doc => {
       const finnkode = doc.id || doc.finnkode || doc.finnCode;
@@ -97,7 +98,7 @@ app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Debug – sjekk status og litt av råresponsen fra FINN
+   Debug – sjekk spesifikk search-endpoint-respons (status + snippet)
    URL: /debug/finnapi?orgId=4008599
 ---------------------------------------------------------- */
 app.get('/debug/finnapi', async (req, res) => {
@@ -118,6 +119,25 @@ app.get('/debug/finnapi', async (req, res) => {
         `JSON: ${Array.isArray(r.data?.docs) ? 'yes' : 'no'}\n\n` +
         `First 800 chars of body:\n${snippet}`
       );
+  } catch (e) {
+    res.status(500).type('text/plain').send(String(e));
+  }
+});
+
+/* ---------------------------------------------------------
+   Debug – test basis-URL som Geir ba om (skal bli 200 når nøkkel er aktiv)
+   URL: /debug/finnroot
+---------------------------------------------------------- */
+app.get('/debug/finnroot', async (_req, res) => {
+  try {
+    const r = await fetch('https://cache.api.finn.no/iad/', {
+      headers: { 'X-FINN-apikey': process.env.FINN_API_KEY || '' }
+    });
+    const text = await r.text();
+    res
+      .status(200)
+      .type('text/plain')
+      .send(`Status: ${r.status}\nOK: ${r.ok}\nFirst 400 chars:\n${text.slice(0,400)}`);
   } catch (e) {
     res.status(500).type('text/plain').send(String(e));
   }
