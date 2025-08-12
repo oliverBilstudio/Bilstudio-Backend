@@ -21,76 +21,90 @@ app.get('/ping', (_req, res) =>
 );
 
 /* ---------------------------------------------------------
-   FINN API – henter biler for orgId (default 4008599)
-   Frontend bruker:  GET https://<din-backend>/api/cars
+   FINN API – prøv flere søkeendepunkt i prioritert rekkefølge.
+   Når Geir åpner /search/car, vil det bli valgt automatisk.
 ---------------------------------------------------------- */
-async function fetchFinnCarsFromApi(orgId, apiKey) {
-  const url = `https://cache.api.finn.no/iad/search/car?orgId=${encodeURIComponent(orgId)}`;
+const SEARCH_PATHS = [
+  'search/car',         // ønsket (kan være stengt -> 403)
+  'search/car-norway',  // fallback
+  'search/car-abroad'   // ekstra fallback
+];
 
+async function fetchOne(path, orgId, apiKey) {
+  const url = `https://cache.api.finn.no/iad/${path}?orgId=${encodeURIComponent(orgId)}`;
   const resp = await fetch(url, {
-    headers: {
-      'X-FINN-apikey': apiKey,   // VIKTIG: riktig header
-      'Accept': 'application/json'
-    }
+    headers: { 'X-FINN-apikey': apiKey, 'Accept': 'application/json' }
   });
-
-  // Les body én gang (til både parsing og debug)
   const text = await resp.text();
   let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch { /* ignorer parse-feil */ }
-
-  return { status: resp.status, ok: resp.ok, data: json, raw: text };
+  try { json = text ? JSON.parse(text) : null; } catch (_) {}
+  return { path, url, status: resp.status, ok: resp.ok, data: json, raw: text };
 }
 
+async function fetchFinnCarsSmart(orgId, apiKey) {
+  const tried = [];
+  for (const p of SEARCH_PATHS) {
+    const r = await fetchOne(p, orgId, apiKey);
+    tried.push({ path: r.path, status: r.status });
+    if (r.ok && Array.isArray(r.data?.docs)) {
+      return { winner: r.path, result: r, tried };
+    }
+    // 200 uten docs? prøv neste
+  }
+  // ingen ga 200+docs
+  return { winner: null, result: null, tried };
+}
+
+function mapDocsToItems(docs) {
+  return docs.map(doc => {
+    const finnkode = doc.id || doc.finnkode || doc.finnCode;
+    const link =
+      doc.ad_link ||
+      (finnkode ? `https://www.finn.no/car/used/ad.html?finnkode=${finnkode}` : '');
+    const image =
+      doc.image ||
+      (Array.isArray(doc.images) && doc.images[0] && (doc.images[0].url || doc.images[0].image_url)) ||
+      '';
+    const price =
+      doc.price?.amount != null
+        ? `${Number(doc.price.amount).toLocaleString('no-NO')} kr`
+        : (doc.price?.display || '');
+
+    return {
+      title: doc.heading || doc.title || 'Uten tittel',
+      link,
+      image,
+      price
+    };
+  });
+}
+
+/* ---------------------------------------------------------
+   Data til frontend: /api/cars (prøver car → car-norway → car-abroad)
+---------------------------------------------------------- */
 app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
   try {
     const orgId = req.query.orgId || '4008599';
-    const apiKey = process.env.FINN_API_KEY; // sett i .env / Render env
-
+    const apiKey = process.env.FINN_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ ok: false, error: 'Mangler FINN_API_KEY i environment' });
     }
 
-    const result = await fetchFinnCarsFromApi(orgId, apiKey);
+    const { winner, result, tried } = await fetchFinnCarsSmart(orgId, apiKey);
 
-    if (!result.ok) {
-      return res
-        .status(result.status)
-        .json({
-          ok: false,
-          error: `FINN API error: ${result.status}`,
-          hint: result.status === 403
-            ? 'Sjekk X-FINN-apikey, at tilgangen er aktiv, og at /iad/search/car er åpnet for nøkkelen.'
-            : undefined
-        });
+    if (!winner) {
+      return res.status(502).json({
+        ok: false,
+        error: 'Ingen FINN-endepunkt returnerte resultat.',
+        tried
+      });
     }
 
-    // Map til enkelt frontend-format
     const docs = Array.isArray(result.data?.docs) ? result.data.docs : [];
-    const items = docs.map(doc => {
-      const finnkode = doc.id || doc.finnkode || doc.finnCode;
-      const link =
-        doc.ad_link ||
-        (finnkode ? `https://www.finn.no/car/used/ad.html?finnkode=${finnkode}` : '');
-      const image =
-        doc.image ||
-        (Array.isArray(doc.images) && doc.images[0] && (doc.images[0].url || doc.images[0].image_url)) ||
-        '';
-      const price =
-        doc.price?.amount != null
-          ? `${Number(doc.price.amount).toLocaleString('no-NO')} kr`
-          : (doc.price?.display || '');
-
-      return {
-        title: doc.heading || doc.title || 'Uten tittel',
-        link,
-        image,
-        price
-      };
-    });
+    const items = mapDocsToItems(docs);
 
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, count: items.length, items });
+    res.json({ ok: true, source: winner, count: items.length, items });
   } catch (err) {
     console.error('FINN API error', err);
     res.status(500).json({ ok: false, error: String(err) });
@@ -98,27 +112,27 @@ app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Debug – sjekk spesifikk search-endpoint-respons (status + snippet)
+   Debug – viser status for hvert endepunkt vi prøver
    URL: /debug/finnapi?orgId=4008599
 ---------------------------------------------------------- */
 app.get('/debug/finnapi', async (req, res) => {
   try {
     const orgId = req.query.orgId || '4008599';
     const apiKey = process.env.FINN_API_KEY || '';
-    if (!apiKey) return res.status(500).send('Mangler FINN_API_KEY');
+    if (!apiKey) return res.status(500).type('text/plain').send('Mangler FINN_API_KEY');
 
-    const r = await fetchFinnCarsFromApi(orgId, apiKey);
-    const snippet = (r.raw || '').slice(0, 800);
-    res
-      .status(200)
-      .type('text/plain')
-      .send(
-        `URL: https://cache.api.finn.no/iad/search/car?orgId=${orgId}\n` +
-        `Status: ${r.status}\n` +
-        `OK: ${r.ok}\n` +
-        `JSON: ${Array.isArray(r.data?.docs) ? 'yes' : 'no'}\n\n` +
-        `First 800 chars of body:\n${snippet}`
-      );
+    let log = [];
+    for (const p of SEARCH_PATHS) {
+      const r = await fetchOne(p, orgId, apiKey);
+      log.push(`PATH: /iad/${p}  →  Status: ${r.status}  OK: ${r.ok}  Docs: ${Array.isArray(r.data?.docs) ? r.data.docs.length : 'no'}`);
+      if (r.ok && Array.isArray(r.data?.docs)) {
+        log.push('');
+        log.push('First 800 chars of JSON:');
+        log.push(JSON.stringify(r.data).slice(0, 800));
+        break;
+      }
+    }
+    res.status(200).type('text/plain').send(log.join('\n'));
   } catch (e) {
     res.status(500).type('text/plain').send(String(e));
   }
@@ -126,7 +140,7 @@ app.get('/debug/finnapi', async (req, res) => {
 
 /* ---------------------------------------------------------
    Debug – FULL liste over collections på /iad/
-   (brukes for å se om "search/car" er tilgjengelig for nøkkelen)
+   (brukes for å se hva nøkkelen faktisk har tilgang til)
    URL: /debug/finnroot
 ---------------------------------------------------------- */
 app.get('/debug/finnroot', async (_req, res) => {
@@ -135,7 +149,6 @@ app.get('/debug/finnroot', async (_req, res) => {
       headers: { 'X-FINN-apikey': process.env.FINN_API_KEY || '' }
     });
     const text = await r.text();
-    // Vis HELE XML, ikke avkort
     res.status(200).type('application/xml').send(text);
   } catch (e) {
     res.status(500).type('text/plain').send(String(e));
