@@ -248,12 +248,22 @@ app.get('/test-mail', async (_req, res) => {
 
 /* ---------------------------------------------------------
    Kontakt‑skjema – sender til MAIL_TO + bekreftelse
+   (Telefon er påkrevd i hovedskjema, men IKKE for lånekalkulator)
 ---------------------------------------------------------- */
 app.post('/contact', async (req, res) => {
   const { regnr = '', name, email, phone, message } = req.body;
 
-  if (!name || !email || !phone) {
-    return res.status(400).json({ error: 'Navn, e‑post og telefon er påkrevd' });
+  // Detekter henvendelser fra lånekalkulatoren
+  const isFromLoanCalc = typeof message === 'string' && /lånekalkulator/i.test(message);
+
+  // Navn og e-post er alltid påkrevd
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Navn og e‑post er påkrevd' });
+  }
+
+  // Telefon er påkrevd KUN hvis det ikke er fra lånekalkulatoren
+  if (!isFromLoanCalc && !phone) {
+    return res.status(400).json({ error: 'Telefon er påkrevd' });
   }
 
   try {
@@ -279,7 +289,7 @@ app.post('/contact', async (req, res) => {
 `Registreringsnummer: ${regnr || '(ikke oppgitt)'}
 Navn: ${name}
 E‑post: ${email}
-Telefon: ${phone}
+Telefon: ${phone || '(ikke oppgitt)'}
 Melding: ${message || '(Ingen melding)'}`
     });
 
