@@ -32,6 +32,7 @@ function mapDocsToItems(docs = []) {
     const finnkode = doc.id || doc.finnkode || doc.finnCode;
     const link =
       doc.ad_link ||
+      (finnkode ? `https://www.finn.no/${finnkode}` : '') || // noen feeds bruker kort URL
       (finnkode ? `https://www.finn.no/car/used/ad.html?finnkode=${finnkode}` : '');
     const image =
       doc.image ||
@@ -62,39 +63,52 @@ function extractPriceFromText(txt) {
 }
 
 function mapAtomEntryToItem(entry) {
-  // entry for Atom kan ha:
-  // - title
-  // - link (kan være array eller objekt). Vi vil ha rel="alternate" som peker til annonsen.
-  // - media:content eller link rel="enclosure" for bilde
-  // - summary eller f:price for pris
+  // Tittel
   const title = entry?.title?.['#text'] || entry?.title || 'Uten tittel';
 
+  // Lenker
   const links = Array.isArray(entry?.link) ? entry.link : entry?.link ? [entry.link] : [];
   const altLink = links.find(l => (l.rel || '').toLowerCase() === 'alternate') || links[0] || {};
-  const link = altLink.href || '';
+  const link = altLink?.href || '';
 
-  // bilde – prøv media:content først, ellers enclosure
+  // Bilde (media:content eller enclosure)
   let image = '';
   const media = entry?.['media:content'] || entry?.['media:group']?.['media:content'];
   if (media) {
-    if (Array.isArray(media)) image = media[0]?.url || '';
-    else image = media.url || '';
+    image = Array.isArray(media) ? (media[0]?.url || '') : (media.url || '');
   }
   if (!image) {
     const enclosure = links.find(l => (l.rel || '').toLowerCase() === 'enclosure' && /^image\//i.test(l.type || ''));
     if (enclosure) image = enclosure.href || '';
   }
 
-  // pris – prøv f:price eller summary‑tekst
-  const priceField = entry?.['f:price'] || entry?.['f:adData']?.price || entry?.['f:ad-data']?.price;
+  // Pris – FINN legger hovedpris typisk i finn:adata/finn:price name="main" value="659999"
   let price = '';
-  if (typeof priceField === 'string') {
-    price = extractPriceFromText(priceField);
-  } else if (priceField?.amount != null) {
-    price = `${Number(priceField.amount).toLocaleString('no-NO')} kr`;
-  } else {
-    const summary = entry?.summary?.['#text'] || entry?.summary || '';
-    price = extractPriceFromText(summary);
+  const adata = entry?.['finn:adata'] || entry?.['f:adData'] || entry?.['f:ad-data'];
+  // saml alle price-noder vi kan finne:
+  let priceNodes = [];
+  if (adata?.['finn:price']) {
+    priceNodes = Array.isArray(adata['finn:price']) ? adata['finn:price'] : [adata['finn:price']];
+  } else if (entry?.['finn:price']) {
+    priceNodes = Array.isArray(entry['finn:price']) ? entry['finn:price'] : [entry['finn:price']];
+  }
+
+  const mainPrice = priceNodes.find(p => (p?.name || '').toLowerCase() === 'main' && p?.value);
+  if (mainPrice?.value != null) {
+    price = `${Number(mainPrice.value).toLocaleString('no-NO')} kr`;
+  }
+
+  // fallback til tekstfelt/summary
+  if (!price) {
+    const priceField = entry?.['f:price'] || adata?.price;
+    if (typeof priceField === 'string') {
+      price = extractPriceFromText(priceField);
+    } else if (priceField?.amount != null) {
+      price = `${Number(priceField.amount).toLocaleString('no-NO')} kr`;
+    } else {
+      const summary = entry?.summary?.['#text'] || entry?.summary || '';
+      price = extractPriceFromText(summary);
+    }
   }
 
   return { title, link, image, price };
@@ -118,7 +132,6 @@ async function fetchAtomSearch(orgId, apiKey) {
   const resp = await fetch(url, {
     headers: {
       'X-FINN-apikey': apiKey,
-      // be om Atom/XML; 406 kom fordi vi tidligere ba om JSON
       'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8'
     }
   });
@@ -145,9 +158,8 @@ async function fetchAtomSearch(orgId, apiKey) {
 
 /* --- Hoved-API til frontenden --- */
 app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
-
   try {
-    const orgId = req.query.orgId || '4008599';
+    const orgId = req.query.orgId || process.env.FINN_ORG_ID || '4008599';
     const apiKey = process.env.FINN_API_KEY;
     if (!apiKey) return res.status(500).json({ ok: false, error: 'Mangler FINN_API_KEY i environment' });
 
@@ -182,7 +194,7 @@ app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
 /* --- Debug: JSON-søk logg --- */
 app.get('/debug/finnapi', async (req, res) => {
   try {
-    const orgId = req.query.orgId || '4008599';
+    const orgId = req.query.orgId || process.env.FINN_ORG_ID || '4008599';
     const apiKey = process.env.FINN_API_KEY || '';
     if (!apiKey) return res.status(500).type('text/plain').send('Mangler FINN_API_KEY');
 
@@ -203,7 +215,7 @@ app.get('/debug/finnapi', async (req, res) => {
 /* --- Debug: Atom-søk logg --- */
 app.get('/debug/finnatom', async (req, res) => {
   try {
-    const orgId = req.query.orgId || '4008599';
+    const orgId = req.query.orgId || process.env.FINN_ORG_ID || '4008599';
     const apiKey = process.env.FINN_API_KEY || '';
     if (!apiKey) return res.status(500).type('text/plain').send('Mangler FINN_API_KEY');
 
@@ -221,7 +233,7 @@ app.get('/debug/finnatom', async (req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Test‑mail – verifiser SMTP (valgfritt)
+   Test-mail – verifiser SMTP (valgfritt)
 ---------------------------------------------------------- */
 app.get('/test-mail', async (_req, res) => {
   try {
@@ -248,21 +260,17 @@ app.get('/test-mail', async (_req, res) => {
 });
 
 /* ---------------------------------------------------------
-   Kontakt‑skjema – sender til MAIL_TO + bekreftelse
+   Kontakt-skjema – sender til MAIL_TO + bekreftelse
    (Telefon er påkrevd i hovedskjema, men IKKE for lånekalkulator)
 ---------------------------------------------------------- */
 app.post('/contact', async (req, res) => {
   const { regnr = '', name, email, phone, message } = req.body;
 
-  // Detekter henvendelser fra lånekalkulatoren
   const isFromLoanCalc = typeof message === 'string' && /lånekalkulator/i.test(message);
 
-  // Navn og e-post er alltid påkrevd
   if (!name || !email) {
-    return res.status(400).json({ error: 'Navn og e‑post er påkrevd' });
+    return res.status(400).json({ error: 'Navn og e-post er påkrevd' });
   }
-
-  // Telefon er påkrevd KUN hvis det ikke er fra lånekalkulatoren
   if (!isFromLoanCalc && !phone) {
     return res.status(400).json({ error: 'Telefon er påkrevd' });
   }
@@ -281,7 +289,6 @@ app.post('/contact', async (req, res) => {
       ? `Ny henvendelse via nettsiden – ${regnr}`
       : `Ny henvendelse via nettsiden`;
 
-    // 1) Intern e‑post
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: process.env.MAIL_TO,
@@ -289,12 +296,11 @@ app.post('/contact', async (req, res) => {
       text:
 `Registreringsnummer: ${regnr || '(ikke oppgitt)'}
 Navn: ${name}
-E‑post: ${email}
+E-post: ${email}
 Telefon: ${phone || '(ikke oppgitt)'}
 Melding: ${message || '(Ingen melding)'}`
     });
 
-    // 2) Bekreftelse til kunde
     await transporter.sendMail({
       from: process.env.MAIL_FROM,
       to: email,
@@ -311,8 +317,8 @@ Bilstudio`
 
     res.json({ success: true });
   } catch (err) {
-    console.error('E‑postfeil', err);
-    res.status(500).json({ error: 'Kunne ikke sende e‑post' });
+    console.error('E-postfeil', err);
+    res.status(500).json({ error: 'Kunne ikke sende e-post' });
   }
 });
 
