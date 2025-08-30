@@ -145,6 +145,7 @@ async function fetchAtomSearch(orgId, apiKey) {
 
 /* --- Hoved-API til frontenden --- */
 app.get(['/finn', '/cars', '/api/cars'], async (req, res) => {
+
   try {
     const orgId = req.query.orgId || '4008599';
     const apiKey = process.env.FINN_API_KEY;
