@@ -246,11 +246,12 @@ app.get('/test-mail', async (_req, res) => {
       debug: true
     });
 
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM,
-      to: process.env.MAIL_TO,
-      subject: 'Test fra Bilstudio backend',
-      text: 'Hvis du leser dette, funker SMTP fra serveren.'
+   const CONTACT_TO = 'post@bil-studio.no';  // ← Ny linje
+await transporter.sendMail({
+  from: process.env.MAIL_FROM,
+  to: CONTACT_TO,              // ← Hardkodet, ikke mulig å få feil
+  subject,
+  text: ...
     });
 
     res.json({ ok: true });
