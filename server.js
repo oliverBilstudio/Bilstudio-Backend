@@ -230,19 +230,6 @@ app.get('/debug/finnatom', async (req, res) => {
   } catch (e) {
     res.status(500).type('text/plain').send(String(e));
   }
-
-   const CONTACT_TO = 'post@bil-studio.no';  // ← Ny linje
-await transporter.sendMail({
-  from: process.env.MAIL_FROM,
-  to: CONTACT_TO,              // ← Hardkodet, ikke mulig å få feil
-  subject,
-  text: ...
-    });
-
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err) });
-  }
 });
 
 /* ---------------------------------------------------------
