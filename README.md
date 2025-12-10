@@ -9,7 +9,7 @@ SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=Oliver@bil-studio.no
 SMTP_PASS=dkqnnktliiexjopn
-MAIL_FROM=Bilstudio <Post@bil-studio.no>
+MAIL_FROM=Oliver@bil-studio.no
 MAIL_TO=Post@bil-studio.no
 ORIGIN=https://boisterous-travesseiro-bc8845.netlify.app
 ```
