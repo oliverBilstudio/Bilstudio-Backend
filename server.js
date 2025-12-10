@@ -230,21 +230,6 @@ app.get('/debug/finnatom', async (req, res) => {
   } catch (e) {
     res.status(500).type('text/plain').send(String(e));
   }
-});
-
-/* ---------------------------------------------------------
-   Test-mail – verifiser SMTP (valgfritt)
----------------------------------------------------------- */
-app.get('/test-mail', async (_req, res) => {
-  try {
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: false,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-      logger: true,
-      debug: true
-    });
 
    const CONTACT_TO = 'post@bil-studio.no';  // ← Ny linje
 await transporter.sendMail({
