@@ -11,7 +11,7 @@ SMTP_USER=Oliver@bil-studio.no
 SMTP_PASS=dkqnnktliiexjopn
 MAIL_FROM=Bilstudio <Post@bil-studio.no>
 MAIL_TO=Post@bil-studio.no
-ORIGIN=https://roaring-nasturtium-94859c.netlify.app
+ORIGIN=https://boisterous-travesseiro-bc8845.netlify.app
 ```
 
 > MAIL_FROM må bruke samme konto som SMTP_USER.
