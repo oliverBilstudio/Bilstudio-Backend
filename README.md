@@ -7,7 +7,7 @@ Express-app som tar imot kontaktskjema og sender e-post (til Bilstudio + bekreft
 ```
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=Post@bil-studio.no
+SMTP_USER=Oliver@bil-studio.no
 SMTP_PASS=dkqnnktliiexjopn
 MAIL_FROM=Bilstudio <Post@bil-studio.no>
 MAIL_TO=Post@bil-studio.no
