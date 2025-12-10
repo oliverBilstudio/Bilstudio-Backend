@@ -262,9 +262,10 @@ app.post('/contact', async (req, res) => {
       ? `Ny henvendelse via nettsiden – ${regnr}`
       : `Ny henvendelse via nettsiden`;
 
+    // 🔽 ENESTE ENDRING: hardkod at henvendelsen går til post@bil-studio.no
     await transporter.sendMail({
-      from: process.env.MAIL_FROM,
-      to: process.env.MAIL_TO,
+      from: process.env.MAIL_FROM || 'Bilstudio <post@bil-studio.no>',
+      to: 'post@bil-studio.no',
       subject,
       text:
 `Registreringsnummer: ${regnr || '(ikke oppgitt)'}
