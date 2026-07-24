@@ -32,7 +32,7 @@ function mapDocsToItems(docs = []) {
     const finnkode = doc.id || doc.finnkode || doc.finnCode;
     const link =
       doc.ad_link ||
-      (finnkode ? `https://www.finn.no/${finnkode}` : '') || // noen feeds bruker kort URL
+      (finnkode ? `https://www.finn.no/${finnkode}` : '') ||
       (finnkode ? `https://www.finn.no/car/used/ad.html?finnkode=${finnkode}` : '');
     const image =
       doc.image ||
@@ -85,7 +85,6 @@ function mapAtomEntryToItem(entry) {
   // Pris – FINN legger hovedpris typisk i finn:adata/finn:price name="main" value="659999"
   let price = '';
   const adata = entry?.['finn:adata'] || entry?.['f:adData'] || entry?.['f:ad-data'];
-  // saml alle price-noder vi kan finne:
   let priceNodes = [];
   if (adata?.['finn:price']) {
     priceNodes = Array.isArray(adata['finn:price']) ? adata['finn:price'] : [adata['finn:price']];
@@ -138,7 +137,6 @@ async function fetchAtomSearch(orgId, apiKey) {
   const xml = await resp.text();
   if (!resp.ok) return { url, status: resp.status, ok: false, items: [], raw: xml };
 
-  // parse XML → JS
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: '',
@@ -147,7 +145,6 @@ async function fetchAtomSearch(orgId, apiKey) {
   let feed;
   try { feed = parser.parse(xml); } catch { return { url, status: 500, ok: false, items: [], raw: xml }; }
 
-  // Atom feed → entries kan ligge under feed.entry
   const entries = feed?.feed?.entry
     ? (Array.isArray(feed.feed.entry) ? feed.feed.entry : [feed.feed.entry])
     : [];
@@ -232,62 +229,110 @@ app.get('/debug/finnatom', async (req, res) => {
   }
 });
 
+/* =========================================================
+   E-POST
+========================================================= */
+
+// Hvor henvendelsene skal, og hvem de kommer fra
+const MAIL_TO   = process.env.MAIL_TO   || 'post@bil-studio.no';
+const MAIL_FROM = process.env.MAIL_FROM || 'Bilstudio <post@bil-studio.no>';
+
+// Opprettes én gang ved oppstart, ikke på nytt for hver henvendelse
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT) || 587,
+  secure: Number(process.env.SMTP_PORT) === 465,
+  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  logger: true,   // Sett begge til false når alt fungerer som det skal
+  debug:  true
+});
+
+// Sjekker SMTP-oppsettet ved oppstart, og skriver det i Render-loggen
+transporter.verify()
+  .then(() => {
+    console.log('SMTP OK.');
+    console.log('  Logger inn som :', process.env.SMTP_USER);
+    console.log('  Sender fra     :', MAIL_FROM);
+    console.log('  Sender til     :', MAIL_TO);
+  })
+  .catch(err => console.error('SMTP-oppsett feilet:', err.message));
+
 /* ---------------------------------------------------------
-   Kontakt-skjema – sender til MAIL_TO + bekreftelse
+   Kontakt-skjema
    (Telefon er påkrevd i hovedskjema, men IKKE for lånekalkulator)
 ---------------------------------------------------------- */
 app.post('/contact', async (req, res) => {
-  const { regnr = '', name, email, phone, message } = req.body;
+  const {
+    regnr   = '',
+    name    = '',
+    email   = '',
+    phone   = '',
+    message = '',
+    page    = ''
+  } = req.body || {};
 
-  const isFromLoanCalc = typeof message === 'string' && /lånekalkulator/i.test(message);
+  const clean = v => String(v || '').trim().slice(0, 2000);
+  const n = clean(name);
+  const e = clean(email);
+  const p = clean(phone);
+  const r = clean(regnr);
+  const m = clean(message);
 
-  if (!name || !email) {
+  const isFromLoanCalc = /lånekalkulator/i.test(m);
+
+  if (!n || !e) {
     return res.status(400).json({ error: 'Navn og e-post er påkrevd' });
   }
-  if (!isFromLoanCalc && !phone) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+    return res.status(400).json({ error: 'Ugyldig e-postadresse' });
+  }
+  if (!isFromLoanCalc && !p) {
     return res.status(400).json({ error: 'Telefon er påkrevd' });
   }
 
   try {
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: false,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-      logger: true,
-      debug: true
+    // 1) Varsel til Bilstudio
+    const info = await transporter.sendMail({
+      from: MAIL_FROM,
+      to: MAIL_TO,
+      replyTo: `${n} <${e}>`,   // Trykker du "Svar", går det rett til kunden
+      subject: r
+        ? `Ny henvendelse via nettsiden – ${r}`
+        : 'Ny henvendelse via nettsiden',
+      text:
+`Registreringsnummer: ${r || '(ikke oppgitt)'}
+Navn: ${n}
+E-post: ${e}
+Telefon: ${p || '(ikke oppgitt)'}
+Side: ${page || '(ukjent)'}
+
+Melding:
+${m || '(ingen melding)'}`
     });
 
-    const subject = regnr
-      ? `Ny henvendelse via nettsiden – ${regnr}`
-      : `Ny henvendelse via nettsiden`;
+    // Viser i Render-loggen hvilken adresse serveren faktisk leverte til
+    console.log('Varsel levert til:', info.accepted, '| avvist:', info.rejected);
 
-    // 🔽 ENESTE ENDRING: hardkod at henvendelsen går til post@bil-studio.no
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM || 'Bilstudio <post@bil-studio.no>',
-      to: 'post@bil-studio.no',
-      subject,
-      text:
-`Registreringsnummer: ${regnr || '(ikke oppgitt)'}
-Navn: ${name}
-E-post: ${email}
-Telefon: ${phone || '(ikke oppgitt)'}
-Melding: ${message || '(Ingen melding)'}`
-    });
+    // 2) Bekreftelse til kunden – feiler denne, skal ikke skjemaet feile
+    try {
+      await transporter.sendMail({
+        from: MAIL_FROM,
+        to: e,
+        replyTo: MAIL_TO,
+        subject: 'Vi har mottatt din henvendelse',
+        text:
+`Hei ${n},
 
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM,
-      to: email,
-      subject: 'Vi har mottatt din henvendelse',
-      text:
-`Hei ${name},
-
-Takk for at du kontaktet oss${regnr ? ` angående bil med registreringsnummer ${regnr}` : ''}.
+Takk for at du kontaktet oss${r ? ` angående bil med registreringsnummer ${r}` : ''}.
 Vi ser på henvendelsen og svarer fortløpende.
 
 Mvh
-Bilstudio`
-    });
+Bilstudio
+post@bil-studio.no`
+      });
+    } catch (err) {
+      console.error('Bekreftelse til kunde feilet:', err.message);
+    }
 
     res.json({ success: true });
   } catch (err) {
